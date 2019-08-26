@@ -1,10 +1,10 @@
 {
-    "name": "broadway/event-store-dbal",
+    "name": "macnificos/event-store-dbal",
     "description": "Event store implementation using doctrine/dbal",
     "license": "MIT",
     "require": {
         "php": ">=7.1",
-        "broadway/broadway": "^2.1",
+        "macnificos/broadway": "^2.1",
         "doctrine/dbal": "~2.4",
         "broadway/uuid-generator": "~0.4.0"
     },
