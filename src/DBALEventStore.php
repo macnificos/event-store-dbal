@@ -16,6 +16,7 @@ namespace Broadway\EventStore\Dbal;
 use Broadway\Domain\DateTime;
 use Broadway\Domain\DomainEventStream;
 use Broadway\Domain\DomainMessage;
+use Broadway\EventHandling\EventBus;
 use Broadway\EventStore\EventStore;
 use Broadway\EventStore\EventStreamNotFoundException;
 use Broadway\EventStore\EventVisitor;
@@ -54,13 +55,17 @@ class DBALEventStore implements EventStore, EventStoreManagement
 
     private $binaryUuidConverter;
 
+    /** @var EventBus|null */
+    private $eventBus;
+
     public function __construct(
         Connection $connection,
         Serializer $payloadSerializer,
         Serializer $metadataSerializer,
         string $tableName,
         bool $useBinary,
-        BinaryUuidConverterInterface $binaryUuidConverter = null
+        BinaryUuidConverterInterface $binaryUuidConverter = null,
+        ?EventBus $eventBus
     ) {
         $this->connection          = $connection;
         $this->payloadSerializer   = $payloadSerializer;
@@ -68,6 +73,7 @@ class DBALEventStore implements EventStore, EventStoreManagement
         $this->tableName           = $tableName;
         $this->useBinary           = (bool) $useBinary;
         $this->binaryUuidConverter = $binaryUuidConverter;
+        $this->eventBus            = $eventBus;
 
         if ($this->useBinary && Version::compare('2.5.0') >= 0) {
             throw new \InvalidArgumentException(
@@ -110,6 +116,25 @@ class DBALEventStore implements EventStore, EventStoreManagement
         $statement = $this->prepareLoadStatement();
         $statement->bindValue(1, $this->convertIdentifierToStorageValue($id));
         $statement->bindValue(2, $playhead);
+        $statement->execute();
+
+        $events = [];
+        while ($row = $statement->fetch()) {
+            $events[] = $this->deserializeEvent($row);
+        }
+
+        return new DomainEventStream($events);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function loadFromPlayheadToPlayhead($id, int $fromPlayhead, int $toPlayhead): DomainEventStream
+    {
+        $statement = $this->prepareLoadPlayheadToPlayheadStatement();
+        $statement->bindValue(1, $this->convertIdentifierToStorageValue($id));
+        $statement->bindValue(2, $fromPlayhead);
+        $statement->bindValue(3, $toPlayhead);
         $statement->execute();
 
         $events = [];
@@ -213,6 +238,18 @@ class DBALEventStore implements EventStore, EventStoreManagement
         return $table;
     }
 
+    public function replay($id, int $fromPlayhead, ?int $toPlayhead = null): void
+    {
+        $eventStream = $toPlayhead
+            ? $this->loadFromPlayheadToPlayhead($id, $fromPlayhead, $toPlayhead)
+            : $this->loadFromPlayhead($id, $fromPlayhead)
+        ;
+
+        if ($this->eventBus) {
+            $this->eventBus->publish($eventStream);
+        }
+    }
+
     private function prepareLoadStatement()
     {
         if (null === $this->loadStatement) {
@@ -220,6 +257,21 @@ class DBALEventStore implements EventStore, EventStoreManagement
                 FROM ' . $this->tableName . '
                 WHERE uuid = ?
                 AND playhead >= ?
+                ORDER BY playhead ASC';
+            $this->loadStatement = $this->connection->prepare($query);
+        }
+
+        return $this->loadStatement;
+    }
+
+    private function prepareLoadPlayheadToPlayheadStatement()
+    {
+        if (null === $this->loadStatement) {
+            $query = 'SELECT uuid, playhead, metadata, payload, recorded_on
+                FROM ' . $this->tableName . '
+                WHERE uuid = ?
+                AND playhead >= ?
+                AND playhead <= ?
                 ORDER BY playhead ASC';
             $this->loadStatement = $this->connection->prepare($query);
         }
